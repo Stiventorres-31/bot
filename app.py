@@ -7,7 +7,7 @@ import threading
 from flask import Flask
 
 # --- CONFIGURACIÓN PRINCIPAL ---
-TOKEN = "8747149594:AAEZq2vH5KVBofOG59LM3IXZAt0ITiqhjq4"
+TOKEN = "8697035911:AAHpH_BllIlPHdwwRcC2AJ88TkHBEMLJteQ"
 CHAT_ID = "-1003991608285"
 URL_API = "https://aviator-round-production.up.railway.app/api/aviator/rounds/1?limit=10"
 
@@ -19,7 +19,8 @@ TARGET_MULTIPLIER = 1.70
 
 # --- GESTIÓN DE RIESGO ---
 STOP_LOSS_TOTAL = 0.20  # Pausa larga si se pierde el 20%
-PAUSE_TIME_LOSS = 900   # 15 minutos de pausa si se pierde un Gale
+PAUSE_TIME_LOSS = 600   # 10 minutos de pausa si se pierde un Gale
+COOLDOWN_ROUNDS = 2    # Mínimo de rondas entre entradas (balanceado)
 
 app = Flask(__name__)
 
@@ -43,6 +44,9 @@ class AviatorInfinityBot:
         self.gale_pendiente = False
         self.pause_until = None
         self.last_id_procesado = None # Para evitar mensajes dobles
+        self.trades_history = []     # Historial ["win", "loss"]
+        self.round_count = 0        # Contador de rondas procesadas
+        self.last_trade_round = 0   # Ronda de la última entrada
 
     def enviar_telegram(self, texto):
         try:
@@ -72,7 +76,7 @@ class AviatorInfinityBot:
 
     def msg_loss(self, valor):
         msg = f"❌ *CICLO CERRADO {valor:.2f}x*\n"
-        msg += "Gale fallido. Pausamos 15 min para analizar."
+        msg += "Gale fallido. Pausamos 10 min para analizar."
         self.enviar_telegram(msg)
 
     def msg_resumen(self):
@@ -88,17 +92,88 @@ class AviatorInfinityBot:
         self.history_signals = []
 
     # --- LÓGICA DE FILTRADO ---
-    def analizar_mercado(self, lista_multiplicadores):
-        if len(lista_multiplicadores) < 5: return False
-        
-        # Evitamos entrar si hay rachas muy malas (velas < 1.10)
-        if any(r < 1.10 for r in lista_multiplicadores[:3]): return False
-        
-        # Patrón de entrada: Si las últimas 2 rondas fueron estables (> 1.50 y > 1.20)
-        # y no hay exceso de velas rosas recientes (para no entrar al final de la racha)
-        if lista_multiplicadores[0] >= 1.50 and lista_multiplicadores[1] >= 1.20:
-            return True
-        return False
+    # --- LÓGICA DE FILTRADO ---
+    def filtro_balanceado(self, results):
+        """
+        results: lista de multiplicadores (float, cronológica)
+        """
+        current_index = self.round_count
+        last_trade_index = self.last_trade_round
+        trades = self.trades_history
+
+        # ==============================
+        # VALIDACIÓN DE HISTORIAL
+        # ==============================
+        if len(results) < 5:
+            return False
+
+        last5 = results[-5:]
+        last4 = results[-4:]
+        last3 = results[-3:]
+
+        # ==============================
+        # COOLDOWN (evitar entradas seguidas)
+        # ==============================
+        if current_index - last_trade_index < COOLDOWN_ROUNDS:
+            return False
+
+        # ==============================
+        # ❌ BLOQUEOS DE RIESGO
+        # ==============================
+
+        # Crash reciente
+        if any(r < 1.30 for r in last3):
+            return False
+
+        # Mercado débil
+        if sum(1 for r in last3 if r < 1.50) >= 2:
+            return False
+
+        # Viene de pérdida
+        if len(trades) >= 1 and trades[-1] == "loss":
+            return False
+
+        # Dos pérdidas seguidas
+        if len(trades) >= 2 and trades[-2:] == ["loss", "loss"]:
+            return False
+
+        # ==============================
+        # ✅ CONDICIONES DE ENTRADA
+        # ==============================
+
+        # Tendencia (flexible)
+        if sum(1 for r in last3 if r >= 1.70) < 2:
+            return False
+
+        # Confirmación
+        if sum(1 for r in last5 if r >= 1.80) < 2:
+            return False
+
+        # Estabilidad
+        if sum(1 for r in last4 if r < 1.50) > 1:
+            return False
+
+        # ==============================
+        # 🧠 SCORE DE CALIDAD
+        # ==============================
+
+        score = 0
+
+        for r in last5:
+            if r >= 2.0:
+                score += 2
+            elif r >= 1.7:
+                score += 1
+            elif r < 1.5:
+                score -= 2
+
+        if score < 2:
+            return False
+
+        # ==============================
+        # ✅ ENTRADA VÁLIDA
+        # ==============================
+        return True
 
     def obtener_api(self):
         try:
@@ -140,7 +215,8 @@ class AviatorInfinityBot:
                 
                 # Si llegamos aquí, es una ronda nueva
                 self.last_id_procesado = ronda_id
-                print(f"📈 Nueva Ronda detectada: {ronda_id} -> {ronda_val}x")
+                self.round_count += 1
+                print(f"📈 Nueva Ronda detectada: {ronda_id} -> {ronda_val}x (Total: {self.round_count})")
 
                 # 4. PROCESAR SI HAY UNA APUESTA ACTIVA
                 if self.entrada_en_curso and not self.gale_pendiente:
@@ -148,6 +224,7 @@ class AviatorInfinityBot:
                         ganancia = (BANKROLL * STAKE_1) * (TARGET_MULTIPLIER - 1)
                         self.profit += ganancia
                         self.history_signals.append({'status': 'win', 'gale': 0, 'res': ronda_val})
+                        self.trades_history.append("win")
                         self.msg_win(ronda_val)
                         self.entrada_en_curso = False
                     else:
@@ -161,11 +238,13 @@ class AviatorInfinityBot:
                         ganancia_neta = ((BANKROLL * STAKE_2) * (TARGET_MULTIPLIER - 1)) - (BANKROLL * STAKE_1)
                         self.profit += ganancia_neta
                         self.history_signals.append({'status': 'win', 'gale': 1, 'res': ronda_val})
+                        self.trades_history.append("win")
                         self.msg_win(ronda_val)
                     else:
                         perdida_total = (BANKROLL * STAKE_1) + (BANKROLL * STAKE_2)
                         self.profit -= perdida_total
                         self.history_signals.append({'status': 'loss', 'gale': 1, 'res': ronda_val})
+                        self.trades_history.append("loss")
                         self.msg_loss(ronda_val)
                         # Pausar tras pérdida de ciclo
                         self.pause_until = datetime.datetime.now() + datetime.timedelta(seconds=PAUSE_TIME_LOSS)
@@ -175,9 +254,13 @@ class AviatorInfinityBot:
                     continue
 
                 # 5. BUSCAR NUEVA SEÑAL (Si no hay nada en curso)
-                if self.analizar_mercado(historial_completo):
+                # historial_completo viene [reciente0, reciente1, ..., antiguo9]
+                # lo invertimos para que sea cronológico [antiguo, ..., reciente] como pide el filtro
+                historial_cronologico = historial_completo[::-1]
+                if self.filtro_balanceado(historial_cronologico):
                     self.msg_entrada()
                     self.entrada_en_curso = True
+                    self.last_trade_round = self.round_count
 
                 # 6. ENVIAR RESUMEN CADA 10 SEÑALES
                 if len(self.history_signals) >= 10:
