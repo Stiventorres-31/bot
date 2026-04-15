@@ -3,8 +3,6 @@ import requests
 import telebot
 import time
 import os
-import threading
-from flask import Flask
 
 # --- CONFIGURACIÓN PRINCIPAL ---
 TOKEN = "8697035911:AAHpH_BllIlPHdwwRcC2AJ88TkHBEMLJteQ"
@@ -19,18 +17,8 @@ TARGET_MULTIPLIER = 1.70
 
 # --- GESTIÓN DE RIESGO ---
 STOP_LOSS_TOTAL = 0.20  # Pausa larga si se pierde el 20%
-PAUSE_TIME_LOSS = 600   # 10 minutos de pausa si se pierde un Gale
+PAUSE_TIME_LOSS = 300   # 5 minutos de pausa si se pierde un Gale
 COOLDOWN_ROUNDS = 2    # Mínimo de rondas entre entradas (balanceado)
-
-app = Flask(__name__)
-
-@app.route('/')
-def health_check():
-    return "Bot Aviator 24/7 Operativo", 200
-
-def run_flask():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
 
 class AviatorInfinityBot:
     def __init__(self):
@@ -76,7 +64,7 @@ class AviatorInfinityBot:
 
     def msg_loss(self, valor):
         msg = f"❌ *CICLO CERRADO {valor:.2f}x*\n"
-        msg += "Gale fallido. Pausamos 10 min para analizar."
+        msg += "Gale fallido. Pausamos 5 min para analizar."
         self.enviar_telegram(msg)
 
     def msg_resumen(self):
@@ -129,13 +117,7 @@ class AviatorInfinityBot:
         if sum(1 for r in last3 if r < 1.50) >= 2:
             return False
 
-        # Viene de pérdida
-        if len(trades) >= 1 and trades[-1] == "loss":
-            return False
-
-        # Dos pérdidas seguidas
-        if len(trades) >= 2 and trades[-2:] == ["loss", "loss"]:
-            return False
+        # El bloqueo por pérdida se maneja con la pausa global en ejecutar_ciclo
 
         # ==============================
         # ✅ CONDICIONES DE ENTRADA
@@ -271,9 +253,6 @@ class AviatorInfinityBot:
                 time.sleep(5)
 
 if __name__ == "__main__":
-    # Iniciar servidor web para que el hosting no se apague
-    threading.Thread(target=run_flask, daemon=True).start()
-    
     # Iniciar Bot
     aviator_bot = AviatorInfinityBot()
     aviator_bot.ejecutar_ciclo()
