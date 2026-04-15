@@ -2,271 +2,195 @@ import datetime
 import requests
 import telebot
 import time
-import json
 import os
 import threading
 from flask import Flask
 
+# --- CONFIGURACIÓN PRINCIPAL ---
 TOKEN = "8747149594:AAEZq2vH5KVBofOG59LM3IXZAt0ITiqhjq4"
 CHAT_ID = "-1003991608285"
 URL_API = "https://aviator-round-production.up.railway.app/api/aviator/rounds/1?limit=10"
 
+# --- PARÁMETROS DE ESTRATEGIA ---
 BANKROLL = 1000000
-STAKE_1 = 0.01
-STAKE_2 = 0.027
+STAKE_1 = 0.01   # 1% de la banca
+STAKE_2 = 0.027  # 2.7% de la banca (Gale)
 TARGET_MULTIPLIER = 1.70
 
-STOP_LOSS = 0.10
-MAX_TRADES = 15
-PAUSE_TIME = 900
+# --- GESTIÓN DE RIESGO ---
+STOP_LOSS_TOTAL = 0.20  # Pausa larga si se pierde el 20%
+PAUSE_TIME_LOSS = 900   # 15 minutos de pausa si se pierde un Gale
 
 app = Flask(__name__)
 
 @app.route('/')
 def health_check():
-    return "Bot Aviator 24/7 Running", 200
+    return "Bot Aviator 24/7 Operativo", 200
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
 
-class AviatorConservativeBot:
+class AviatorInfinityBot:
     def __init__(self):
-        self.token = TOKEN
-        self.chat_id = CHAT_ID
-        self.url_API = URL_API
-        
+        self.bot = telebot.TeleBot(token=TOKEN, parse_mode='MARKDOWN')
         self.balance = BANKROLL
         self.profit = 0
-        self.trades = []
-        self.results = []
         self.history_signals = []
         
+        # Estados de la operación
         self.entrada_en_curso = False
         self.gale_pendiente = False
-        self.session_active = True
-        self.trades_count = 0
         self.pause_until = None
-        
-        self._init_bot()
+        self.last_id_procesado = None # Para evitar mensajes dobles
 
-    def _init_bot(self):
+    def enviar_telegram(self, texto):
         try:
-            self.bot = telebot.TeleBot(token=self.token, parse_mode='MARKDOWN')
-            print("✅ Bot inicializado correctamente")
+            self.bot.send_message(chat_id=CHAT_ID, text=texto)
         except Exception as e:
-            print(f"❌ Error inicializando bot: {e}")
+            print(f"❌ Error enviando a Telegram: {e}")
 
-    def send_telegram_with_retry(self, message, max_retries=3):
-        for attempt in range(max_retries):
-            try:
-                self.bot.send_message(chat_id=self.chat_id, text=message)
-                return True
-            except Exception:
-                if attempt < max_retries - 1:
-                    time.sleep(2)
-        return False
+    # --- MENSAJES ---
+    def msg_entrada(self):
+        msg = "🚀 *ENTRADA DETECTADA*\n\n"
+        msg += f"🎯 Punto de Retiro: *{TARGET_MULTIPLIER:.2f}x*\n"
+        msg += f"💰 Inversión sugerida: *{STAKE_1*100:.1f}%*\n\n"
+        msg += "⚠️ *Ejecutar en la siguiente ronda*"
+        self.enviar_telegram(msg)
 
-    def mensaje_entrada(self):
-        msg = "🚀 ENTRADA DETECTADA\n\n"
-        msg += "🎯 Juego: Aviator\n"
-        msg += f"📈 Retiro: {TARGET_MULTIPLIER:.2f}\n\n"
-        msg += f"💰 Apuesta: {STAKE_1*100:.0f}% de tu banca\n\n"
-        msg += "🧠 Condición del mercado: ESTABLE\n"
-        msg += "⏳ Ejecutar en la próxima ronda\n\n"
-        msg += "⚠️ Recuerda: seguimos sistema, no emociones"
-        self.send_telegram_with_retry(msg)
-        print("✅ ENTRADA enviada")
+    def msg_gale(self):
+        msg = "⚠️ *MARTINGALA 1*\n\n"
+        msg += "El avión se fue antes. Entramos de nuevo.\n"
+        msg += f"💰 Inversión: *{STAKE_2*100:.1f}%*\n"
+        msg += f"🎯 Retiro: *{TARGET_MULTIPLIER:.2f}x*"
+        self.enviar_telegram(msg)
 
-    def mensaje_gale(self):
-        msg = "⚠️ GALE ACTIVADO\n\n"
-        msg += "🔁 Continuación del ciclo\n\n"
-        msg += f"💰 Apuesta: {STAKE_2*100:.1f}% de tu banca\n"
-        msg += f"🎯 Retiro: {TARGET_MULTIPLIER:.2f}\n\n"
-        msg += "🧠 Movimiento de recuperación en curso\n\n"
-        msg += "❗ Mantén la calma y respeta la estrategia ❗"
-        self.send_telegram_with_retry(msg)
-        print("✅ GALE enviado")
+    def msg_win(self, valor):
+        msg = f"✅ *¡WIN {valor:.2f}x!*\n"
+        msg += "Estrategia aplicada con éxito."
+        self.enviar_telegram(msg)
 
-    def mensaje_win(self, resultado):
-        msg = "✅ CICLO GANADO\n\n"
-        msg += "📈 Operación exitosa\n\n"
-        msg += f"🎯 Resultado: {resultado:.2f}x\n\n"
-        msg += "💰 Resultado positivo en la banca\n\n"
-        msg += "🧠 Disciplina aplicada correctamente"
-        self.send_telegram_with_retry(msg)
-        print(f"✅ WIN registrado: {resultado}x")
+    def msg_loss(self, valor):
+        msg = f"❌ *CICLO CERRADO {valor:.2f}x*\n"
+        msg += "Gale fallido. Pausamos 15 min para analizar."
+        self.enviar_telegram(msg)
 
-    def mensaje_loss(self, resultado):
-        msg = "❌ CICLO PERDIDO\n\n"
-        msg += "📉 Se activó pérdida completa del ciclo\n\n"
-        msg += f"🎯 Resultado: {resultado:.2f}x\n\n"
-        msg += "🧠 Esto hace parte del sistema\n"
-        msg += "🔒 Control de riesgo activo\n\n"
-        msg += "⏸️ Esperando nueva condición"
-        self.send_telegram_with_retry(msg)
-        print(f"❌ LOSS registrado: {resultado}x")
-
-    def mensaje_stop(self):
-        msg = "🛑 STOP ACTIVADO\n\n"
-        msg += "⚠️ Condición de riesgo detectada\n\n"
-        msg += "⏸️ Pausando operaciones temporalmente\n\n"
-        msg += "🧠 El sistema protege tu capital\n"
-        msg += "⌛ Retomaremos en mejores condiciones"
-        self.send_telegram_with_retry(msg)
-        print("✅ STOP enviado")
-
-    def mensaje_cierre(self, motivo):
-        msg = "📊 SESIÓN FINALIZADA\n\n"
-        msg += f"🎯 {motivo}\n\n"
-        msg += "💰 Resultado consolidado\n\n"
-        msg += "🧠 Recuerda: menos operaciones, mejor precisión\n\n"
-        msg += "🚀 Nos vemos en la próxima sesión"
-        self.send_telegram_with_retry(msg)
-        print(f"✅ SESIÓN CERRADA: {motivo}")
-
-    def mensaje_resumen(self):
-        if not self.history_signals:
-            return
-        msg = "📊 RESUMEN SEÑALES\n\n"
-        for signal in self.history_signals:
-            status = "WIN" if signal['status'] == 'win' else "LOSS"
-            msg += f"{status} {signal['resultado']:.2f} GALE {signal['gale']}\n"
-        profit_percent = (self.profit / BANKROLL) * 100
-        msg += f"\n💰 PROFIT {profit_percent:.1f}%"
-        self.send_telegram_with_retry(msg)
+    def msg_resumen(self):
+        if not self.history_signals: return
+        msg = "📊 *RESUMEN DE OPERACIONES*\n\n"
+        for s in self.history_signals:
+            icon = "✅" if s['status'] == 'win' else "❌"
+            msg += f"{icon} Multiplicador: {s['res']:.2f}x (G{s['gale']})\n"
+        
+        profit_perc = (self.profit / BANKROLL) * 100
+        msg += f"\n💰 *Profit Neto: {profit_perc:.2f}%*"
+        self.enviar_telegram(msg)
         self.history_signals = []
-        print(f"✅ RESUMEN enviado (Profit: {profit_percent:.1f}%)")
 
-    def filtro_valido(self):
-        if len(self.results) < 5:
-            return False
-        last5 = self.results[:5]
-        last4 = self.results[:4]
-        last3 = self.results[:3]
-        last2 = self.results[:2]
-        if any(r < 1.30 for r in last3):
-            return False
-        if sum(1 for r in last4 if r < 1.50) >= 2:
-            return False
-        if len(self.trades) >= 2 and self.trades[-2:] == ["loss", "loss"]:
-            return False
-        if sum(1 for r in last5 if r >= 1.70) >= 3 and all(r >= 1.50 for r in last2):
+    # --- LÓGICA DE FILTRADO ---
+    def analizar_mercado(self, lista_multiplicadores):
+        if len(lista_multiplicadores) < 5: return False
+        
+        # Evitamos entrar si hay rachas muy malas (velas < 1.10)
+        if any(r < 1.10 for r in lista_multiplicadores[:3]): return False
+        
+        # Patrón de entrada: Si las últimas 2 rondas fueron estables (> 1.50 y > 1.20)
+        # y no hay exceso de velas rosas recientes (para no entrar al final de la racha)
+        if lista_multiplicadores[0] >= 1.50 and lista_multiplicadores[1] >= 1.20:
             return True
         return False
 
-    def control_riesgo(self):
-        if self.profit <= -BANKROLL * STOP_LOSS:
-            self.mensaje_cierre(f"Límite de pérdida alcanzado (-{STOP_LOSS*100}%)")
-            self.session_active = False
-            return "STOP_LOSS"
-        if len(self.trades) >= 2 and self.trades[-2:] == ["loss", "loss"]:
-            self.pause_until = datetime.datetime.now() + datetime.timedelta(seconds=PAUSE_TIME)
-            self.mensaje_stop()
-            return "PAUSE"
-        if self.trades_count >= MAX_TRADES:
-            self.mensaje_cierre(f"Máximo de operaciones alcanzado ({MAX_TRADES})")
-            self.session_active = False
-            return "MAX_TRADES"
-        return "CONTINUE"
-
-    def ejecutar_trade(self, apuesta, resultado):
-        if resultado >= TARGET_MULTIPLIER:
-            return apuesta * (TARGET_MULTIPLIER - 1)
-        return -apuesta
-
-    def procesar_entrada(self, resultado):
-        apuesta = BANKROLL * STAKE_1
-        ganancia = self.ejecutar_trade(apuesta, resultado)
-        if ganancia > 0:
-            self.balance += ganancia
-            self.profit += ganancia
-            self.trades.append("win")
-            self.trades_count += 1
-            self.history_signals.append({'status': 'win', 'gale': 0, 'resultado': resultado})
-            self.mensaje_win(resultado)
-            self.entrada_en_curso = False
-        else:
-            self.gale_pendiente = True
-            self.entrada_en_curso = False
-            self.mensaje_gale()
-
-    def procesar_gale(self, resultado):
-        apuesta_1 = BANKROLL * STAKE_1
-        apuesta_2 = BANKROLL * STAKE_2
-        ganancia_2 = self.ejecutar_trade(apuesta_2, resultado)
-        if ganancia_2 > 0:
-            neto = ganancia_2 - apuesta_1
-            self.balance += neto
-            self.profit += neto
-            self.trades.append("win")
-            self.trades_count += 1
-            self.history_signals.append({'status': 'win', 'gale': 1, 'resultado': resultado})
-            self.mensaje_win(resultado)
-        else:
-            perdida = apuesta_1 + apuesta_2
-            self.balance -= perdida
-            self.profit -= perdida
-            self.trades.append("loss")
-            self.trades_count += 1
-            self.history_signals.append({'status': 'loss', 'gale': 1, 'resultado': resultado})
-            self.mensaje_loss(resultado)
-        self.gale_pendiente = False
-
-    def obtener_resultados(self):
+    def obtener_api(self):
         try:
-            response = requests.get(self.url_API, timeout=5)
-            data = response.json()
-            if isinstance(data, list):
-                return [float(e['max_multiplier']) for e in data][:5]
-            return None
+            response = requests.get(URL_API, timeout=10)
+            return response.json()
         except Exception as e:
-            print(f"❌ Error API: {e}")
+            print(f"⚠️ Error de conexión API: {e}")
             return None
 
-    def start(self):
-        print("🚀 Bot Conservador 1.70 Iniciado 24/7...")
-        check = []
+    def ejecutar_ciclo(self):
+        print("🚀 Bot Aviator Infinity 24/7 iniciado...")
+        
         while True:
             try:
-                if not self.session_active:
-                    time.sleep(3600)
-                    self.session_active, self.balance, self.profit = True, BANKROLL, 0
-                    self.trades, self.trades_count, self.results, check = [], 0, [], []
-                    continue
+                # 1. Control de Pausa
                 if self.pause_until:
                     if datetime.datetime.now() < self.pause_until:
-                        time.sleep(10)
+                        time.sleep(30)
                         continue
-                    self.pause_until = None
-                if self.control_riesgo() != "CONTINUE":
-                    time.sleep(60)
+                    else:
+                        print("⏳ Pausa terminada. Retomando búsqueda...")
+                        self.pause_until = None
+
+                # 2. Obtener datos
+                data = self.obtener_api()
+                if not data or not isinstance(data, list):
+                    time.sleep(2)
                     continue
-                time.sleep(1)
-                results = self.obtener_resultados()
-                if not results or check == results:
+
+                ronda_actual = data[0]
+                ronda_id = ronda_actual['id'] # El ID de tu API (ej: 31359)
+                ronda_val = float(ronda_actual['max_multiplier'])
+                historial_completo = [float(x['max_multiplier']) for x in data]
+
+                # 3. FILTRO ANTI-DUPLICADOS (Crucial para no enviar mensajes dobles)
+                if ronda_id == self.last_id_procesado:
+                    time.sleep(1) # Esperar que la API actualice la siguiente ronda
                     continue
-                check = results
-                if not self.results or results[0] != self.results[0]:
-                    if self.results: self.results.insert(0, results[0])
-                    else: self.results = results[:5]
-                    if len(self.results) > 20: self.results = self.results[:20]
-                    print(f"📈 Resultado: {results[0]}x | Historial: {[f'{r:.2f}' for r in self.results[:5]]}")
-                    if self.entrada_en_curso and not self.gale_pendiente:
-                        self.procesar_entrada(results[0])
-                    elif self.gale_pendiente:
-                        self.procesar_gale(results[0])
-                    elif not self.entrada_en_curso and not self.gale_pendiente:
-                        if self.filtro_valido():
-                            self.mensaje_entrada()
-                            self.entrada_en_curso = True
+                
+                # Si llegamos aquí, es una ronda nueva
+                self.last_id_procesado = ronda_id
+                print(f"📈 Nueva Ronda detectada: {ronda_id} -> {ronda_val}x")
+
+                # 4. PROCESAR SI HAY UNA APUESTA ACTIVA
+                if self.entrada_en_curso and not self.gale_pendiente:
+                    if ronda_val >= TARGET_MULTIPLIER:
+                        ganancia = (BANKROLL * STAKE_1) * (TARGET_MULTIPLIER - 1)
+                        self.profit += ganancia
+                        self.history_signals.append({'status': 'win', 'gale': 0, 'res': ronda_val})
+                        self.msg_win(ronda_val)
+                        self.entrada_en_curso = False
+                    else:
+                        # Falló la primera, activar Gale
+                        self.gale_pendiente = True
+                        self.msg_gale()
+                    continue
+
+                elif self.gale_pendiente:
+                    if ronda_val >= TARGET_MULTIPLIER:
+                        ganancia_neta = ((BANKROLL * STAKE_2) * (TARGET_MULTIPLIER - 1)) - (BANKROLL * STAKE_1)
+                        self.profit += ganancia_neta
+                        self.history_signals.append({'status': 'win', 'gale': 1, 'res': ronda_val})
+                        self.msg_win(ronda_val)
+                    else:
+                        perdida_total = (BANKROLL * STAKE_1) + (BANKROLL * STAKE_2)
+                        self.profit -= perdida_total
+                        self.history_signals.append({'status': 'loss', 'gale': 1, 'res': ronda_val})
+                        self.msg_loss(ronda_val)
+                        # Pausar tras pérdida de ciclo
+                        self.pause_until = datetime.datetime.now() + datetime.timedelta(seconds=PAUSE_TIME_LOSS)
+                    
+                    self.entrada_en_curso = False
+                    self.gale_pendiente = False
+                    continue
+
+                # 5. BUSCAR NUEVA SEÑAL (Si no hay nada en curso)
+                if self.analizar_mercado(historial_completo):
+                    self.msg_entrada()
+                    self.entrada_en_curso = True
+
+                # 6. ENVIAR RESUMEN CADA 10 SEÑALES
                 if len(self.history_signals) >= 10:
-                    self.mensaje_resumen()
+                    self.msg_resumen()
+
             except Exception as e:
-                print(f"⚠️ Error: {e}")
-                time.sleep(2)
+                print(f"💥 Error en el bucle: {e}")
+                time.sleep(5)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_flask).start()
-    bot = AviatorConservativeBot()
-    bot.start()
+    # Iniciar servidor web para que el hosting no se apague
+    threading.Thread(target=run_flask, daemon=True).start()
+    
+    # Iniciar Bot
+    aviator_bot = AviatorInfinityBot()
+    aviator_bot.ejecutar_ciclo()
