@@ -79,66 +79,61 @@ class AviatorInfinityBot:
 
     # --- LÓGICA DE FILTRADO ---
     # --- LÓGICA DE FILTRADO ---
-    def filtro_balanceado(self, results):
+    def filtro_170_balanceado(self, results):
         """
-        results: lista de multiplicadores (float, cronológica)
+        FILTRO 170 BALANCEADO
+        Optimizado para entradas de 1.70x con control de racha.
         """
-        current_index = self.round_count
+        i = self.round_count
         last_trade_index = self.last_trade_round
         trades = self.trades_history
 
-        # ==============================
-        # VALIDACIÓN DE HISTORIAL
-        # ==============================
         if len(results) < 5:
             return False
 
+        # Tomamos los últimos segmentos
         last5 = results[-5:]
         last4 = results[-4:]
         last3 = results[-3:]
 
         # ==============================
-        # COOLDOWN (evitar entradas seguidas)
+        # 🧊 COOLDOWN (equilibrado)
         # ==============================
-        if current_index - last_trade_index < COOLDOWN_ROUNDS:
+        if i - last_trade_index < 2:
             return False
 
         # ==============================
-        # ❌ BLOQUEOS DE RIESGO
+        # ❌ BLOQUEOS IMPORTANTES
         # ==============================
 
-        # Crash reciente
-        if any(r < 1.30 for r in last3):
+        # evitar crash fuerte
+        if any(r < 1.25 for r in last3):
             return False
 
-        # Mercado débil
-        if sum(1 for r in last3 if r < 1.50) >= 2:
+        # evitar mercado débil
+        if sum(1 for r in last4 if r < 1.50) >= 2:
             return False
 
-        # El bloqueo por pérdida se maneja con la pausa global en ejecutar_ciclo
+        # evitar última ronda muy mala
+        if last3[-1] < 1.35:
+            return False
 
         # ==============================
-        # ✅ CONDICIONES DE ENTRADA
+        # ✅ CONDICIONES
         # ==============================
 
-        # Tendencia (flexible)
+        # continuidad
         if sum(1 for r in last3 if r >= 1.70) < 2:
             return False
 
-        # Confirmación
+        # confirmación
         if sum(1 for r in last5 if r >= 1.80) < 2:
             return False
 
-        # Estabilidad
-        if sum(1 for r in last4 if r < 1.50) > 1:
-            return False
-
         # ==============================
-        # 🧠 SCORE DE CALIDAD
+        # 🧠 SCORE SIMPLE
         # ==============================
-
         score = 0
-
         for r in last5:
             if r >= 2.0:
                 score += 2
@@ -147,12 +142,15 @@ class AviatorInfinityBot:
             elif r < 1.5:
                 score -= 2
 
-        if score < 2:
+        if score < 1:
             return False
 
         # ==============================
-        # ✅ ENTRADA VÁLIDA
+        # ⚠️ CONTROL DE RACHA
         # ==============================
+        if len(trades) >= 1 and trades[-1] == "loss":
+            return False
+
         return True
 
     def obtener_api(self):
@@ -237,7 +235,7 @@ class AviatorInfinityBot:
                 # historial_completo viene [reciente0, reciente1, ..., antiguo9]
                 # lo invertimos para que sea cronológico [antiguo, ..., reciente] como pide el filtro
                 historial_cronologico = historial_completo[::-1]
-                if self.filtro_balanceado(historial_cronologico):
+                if self.filtro_170_balanceado(historial_cronologico):
                     self.msg_entrada()
                     self.entrada_en_curso = True
                     self.last_trade_round = self.round_count
