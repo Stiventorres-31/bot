@@ -5,8 +5,8 @@ import time
 import os
 
 # --- CONFIGURACIÓN PRINCIPAL ---
-TOKEN = "8697035911:AAHpH_BllIlPHdwwRcC2AJ88TkHBEMLJteQ"
-CHAT_ID = "-1003991608285"
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 URL_API = "https://aviator-round-production.up.railway.app/api/aviator/rounds/1?limit=10"
 
 # --- PARÁMETROS DE ESTRATEGIA ---
